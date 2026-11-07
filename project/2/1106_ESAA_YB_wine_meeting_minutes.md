@@ -20,15 +20,50 @@ ESAA YB 미니 프로젝트(2) — YB 2조 (승주 · 희경 · 경서 · 민서
 | 상관 약한 변수 | **유지** | 7개 빼면 0.6687 → 0.6427 |
 | 중복 행 | **유지** | 지우면 0.6687 → 0.5769. test의 30.3%가 train과 동일 |
 
-### 공통 전처리 코드
+### 공통 코드 — [`common.py`](common.py)
+
+전처리를 각자 다르게 하면 점수를 비교할 수 없다. **세 모델 담당자는 이 파일을 그대로 쓴다.**
 
 ```python
-X = train.drop(['index', 'quality'], axis=1)
-X['is_white'] = (train['type'] == 'white').astype(int)
-X = X.drop('type', axis=1)
-X['bound_so2'] = train['total sulfur dioxide'] - train['free sulfur dioxide']
+!wget -q https://raw.githubusercontent.com/sjlee53/ESAA-submission/main/project/2/common.py
+from common import *
 
-y = train['quality']
+train, test, sub = load_data()      # 데이터가 없으면 자동으로 받아온다
+X, y = make_xy(train)
+X_test = make_x(test)
+
+from sklearn.ensemble import ExtraTreesClassifier
+evaluate(ExtraTreesClassifier(n_estimators=300, random_state=42, n_jobs=-1), X, y)
+# -> 평균과 폴드별 5개 점수를 같이 출력한다
+```
+
+XGBoost는 라벨을 옮겨야 한다.
+
+```python
+evaluate(model, X, y, shift=True)           # 평가
+model.fit(X, shift_y(y))                    # 학습
+pred = unshift_y(model.predict(X_test))     # 예측 (자동으로 +3)
+```
+
+제출 파일은 형식 검사를 거쳐 저장한다.
+
+```python
+make_submission(pred, sub, 'submission.csv')
+```
+
+최종 후보만 그룹 검증을 한 번 더 돌린다.
+
+```python
+evaluate_group(model, X, y, train)
+```
+
+`make_x()`가 하는 일은 이 네 줄이 전부다.
+
+```python
+X = df.drop(columns=['index', 'quality'])
+X['is_white'] = (X['type'] == 'white').astype(int)
+X = X.drop(columns=['type'])
+X['bound_so2'] = X['total sulfur dioxide'] - X['free sulfur dioxide']
 ```
 
 **이 외에는 아무것도 하지 않는다.** 변환·이상치 처리·불균형 처리·중복 제거·변수 제거 모두 없음.
@@ -137,7 +172,53 @@ pred = model.predict(test) + 3
 
 ---
 
-## 7. 참고 — 현재 점수
+## 7. 세 번째 모델을 XGBoost로 정한 기준
+
+XGBoost와 LightGBM은 정확도 차이가 0.0027로 사실상 동률이라, 네 가지 기준으로 비교했다.
+
+| 기준 | XGBoost | LightGBM | |
+|---|---|---|---|
+| 일반 CV (리더보드 대리값) | **0.6540** | 0.6513 | XGB |
+| 그룹 CV (처음 보는 와인) | 0.5385 | **0.5463** | LGBM |
+| 안정성 (표준편차) | ±0.0123 | **±0.0107** | LGBM |
+| 수행 시간 (5겹) | **17.3초** | 27.3초 | XGB |
+
+두 기준은 LightGBM이 앞선다. 그럼에도 XGBoost를 택한 이유는, **대회 평가 산식이 Accuracy이고
+리더보드는 겹침 30% 환경에서 채점하므로 일반 교차검증이 그 대리값**이기 때문이다.
+수행 시간이 1.6배 빠른 것도 튜닝 반복에 유리하다.
+
+> 교재에는 LightGBM이 더 빠르다고 나오지만, 5,497행 규모에서는 XGBoost가 더 빨랐다.
+> LightGBM의 속도 이점은 데이터가 훨씬 클 때 나타난다.
+
+**XGBoost 튜닝이 막히면 LightGBM으로 바꿔도 된다.** 두 모델이 동률이고 조건은 "3가지 이상"이다.
+
+---
+
+## 8. 결과를 말할 때 주의할 것
+
+숫자를 다시 확인한 결과, 다음 네 가지는 **"효과가 있었다"고 말하면 과장**이다.
+
+**① 결합 이산화황** — 네 모델 모두 올랐지만 각각은 +0.002~+0.005로 표준편차 안이다.
+근거는 "네 번 모두 같은 방향"이라는 일관성뿐이다.
+→ "포함 관계를 분리한다는 근거로 넣었고, 네 모델 모두 미세하게 올랐다"
+
+**② red/white 통합** — 숫자만 보면 **분리가 0.6722로 통합 0.6687보다 높다.**
+차이가 표준편차 안이라 데이터를 쪼개지 않는 쪽을 택한 것이다.
+→ "분리가 0.003 높았지만 표준편차 안이라, 학습 데이터를 쪼개지 않는 통합을 택했다"
+
+**③ XGBoost vs LightGBM** — 위 7절대로 기준을 밝힌다. "더 좋아서"가 아니다.
+
+**④ 이상치 행 삭제** — 직접 비교하지 않았다. 캡핑(극단값 자르기)은 비교했고 효과가 없었다.
+
+### 튜닝할 때 주의
+
+교차검증 점수에는 중복으로 인한 몫이 약 10%p 섞여 있다. 그 점수를 최대화하면
+`max_depth`를 깊게, `min_samples_leaf`를 1로 두는 쪽이 유리해 보일 수 있는데,
+**학습 데이터를 외우는 방향**일 수 있다. 그래서 최종 후보는 반드시 그룹 검증으로 한 번 더 확인한다.
+
+---
+
+## 9. 참고 — 현재 점수
 
 | 모델 | 일반 CV | 그룹 CV |
 |---|---|---|
