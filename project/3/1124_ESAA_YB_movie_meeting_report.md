@@ -139,9 +139,27 @@ test에는 명량·베테랑·군도·사도·신세계가 들어 있고, 우리
 
 ### 결정
 
-- 공통 전처리는 위 표로 고정하고 `common.py` 하나로 만든다.
-- 모델은 담당을 나눠 **같은 폴드·같은 시드**로 돌리고 결과를 한 표에 모은다.
+- 공통 전처리는 위 표로 고정하고 [`common.py`](common.py) 하나로 만들었다. **모델 담당자는 이 파일을 그대로 쓴다.**
+- 모델은 담당을 나눠 **같은 폴드·같은 시드**(`KFold(5, shuffle=True)` × seed 0·1·2)로 돌리고 결과를 한 표에 모은다.
 - 제출은 하루 10회 제한이 있으므로 **교차검증에서 걸러낸 것만** 올린다.
+
+`common.py` 기준 점수는 **1,412,640**이다(CatBoost 기본 설정). 베이스라인 제출 때의 1,440,532보다 좋아졌는데, 배급사 표기 정규화와 `time` 보정이 반영된 결과다. **각자의 모델이 이 숫자를 넘기는지로 판단한다.**
+
+```python
+!wget -q https://raw.githubusercontent.com/sjlee53/ESAA-submission/YB/project/3/common.py
+from common import *
+
+train, test, sub = load_data()
+X, y, X_test = make_xy(train, test)
+
+from catboost import CatBoostRegressor
+evaluate(CatBoostRegressor(iterations=600, learning_rate=0.05, depth=5,
+                           verbose=0, allow_writing_files=False), X, y)
+# -> CatBoostRegressor  RMSE 1,412,640  (폴드 표준편차 277,010, 5-fold x 3seed)
+
+pred = fit_predict(model, X, y, X_test)
+save_submission(pred, sub, 'submission_내이름.csv')
+```
 
 ### 미결 — 외부 데이터 사용 여부 (문의 중)
 
@@ -173,6 +191,7 @@ test에는 명량·베테랑·군도·사도·신세계가 들어 있고, 우리
 
 | 파일 | 내용 |
 |---|---|
+| [`common.py`](common.py) | **공통 전처리·검증 코드. 모델 담당자는 이것을 쓴다** |
 | [`1124_ESAA_YB_movie_test_EDA.ipynb`](1124_ESAA_YB_movie_test_EDA.ipynb) | test 데이터 EDA (37셀) |
 | [`baseline_catboost.py`](baseline_catboost.py) | 첫 제출용 베이스라인 |
 | [`submission_baseline.csv`](submission_baseline.csv) | 제출 파일 (리더보드 1,202,747.56) |
