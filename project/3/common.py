@@ -47,8 +47,8 @@ SEED = 42
 N_SPLITS = 5
 SEEDS = (0, 1, 2)          # 교차검증·제출 모두 이 세 개를 평균한다
 
-__all__ = ['load_data', 'clean', 'make_xy', 'make_x', 'rmse', 'evaluate',
-           'fit_predict', 'save_submission', 'SEED', 'N_SPLITS', 'SEEDS']
+__all__ = ['load_data', 'clean', 'make_xy', 'make_x', 'past_stats', 'rmse',
+           'evaluate', 'fit_predict', 'save_submission', 'SEED', 'N_SPLITS', 'SEEDS']
 
 
 # ---------------------------------------------------------------- 데이터
@@ -100,8 +100,13 @@ def clean(df, time_median=None):
     return df
 
 
-def make_xy(train, test):
+def make_xy(train, test, norm_dist=False):
     """학습용 X, y 와 test 용 X_test 를 함께 만든다.
+
+    norm_dist: 배급사 표기를 정규화해서 빈도를 셀지. **기본값은 False 다.**
+        교차검증에서는 정규화가 더 좋았지만(1,440,532 -> 1,412,640)
+        리더보드에서는 43,164 나빠졌다(1,202,747 -> 1,245,912).
+        이 대회에서는 리더보드를 믿는다.
 
     타깃을 쓰지 않는 변환만 하므로 train/test 를 함께 처리해도 누수가 아니다.
     (타깃 인코딩이나 스케일러를 쓰고 싶다면 반드시 폴드 안에서 fit 해야 한다.)
@@ -109,6 +114,7 @@ def make_xy(train, test):
     time_median = train.groupby('genre')['time'].median()
     tr = clean(train, time_median)
     te = clean(test, time_median)
+    dist_col = 'dist_norm' if norm_dist else 'distributor'
 
     y = tr['box_off_num'].values
     full = pd.concat([tr.drop(columns=['box_off_num']), te], ignore_index=True)
@@ -132,7 +138,7 @@ def make_xy(train, test):
 
     # 배급사는 '어느 회사인가'보다 '몇 편을 낸 회사인가'가 신호다.
     # 감독은 test 63% 가 train 에 없어서 쓰지 않는다.
-    X['dist_freq'] = full['dist_norm'].map(full['dist_norm'].value_counts()).values
+    X['dist_freq'] = full[dist_col].map(full[dist_col].value_counts()).values
 
     return (X.iloc[:n].reset_index(drop=True),
             y,
@@ -142,6 +148,54 @@ def make_xy(train, test):
 def make_x(train, test):
     """X_test 만 필요할 때."""
     return make_xy(train, test)[2]
+
+
+# --------------------------------------------- 선택: 과거작 실제 실적 (실험 중)
+
+def past_stats(target, source, key='director'):
+    """target 각 행에 대해, source 안에서 같은 key 이고 **개봉일이 더 이른** 영화들의 실적.
+
+    주어진 `dir_prev_bfnum` 이 train 안의 실제 기록과 맞지 않아서 직접 만든 것이다.
+    예) 베테랑의 dir_prev_bfnum 은 97,469 인데, train 에 류승완 감독의
+        부당거래(272만)·베를린(717만)이 그대로 들어 있다. 50배 차이다.
+
+    **누수 주의.** source 는 정답을 아는 데이터여야 하고, 교차검증에서는
+    반드시 **학습 폴드만** 넘겨야 한다. 검증 폴드를 넣으면 점수가 부풀려진다.
+
+        # 올바른 사용 (교차검증 안에서)
+        src = train.iloc[train_idx]
+        Xa = pd.concat([Xa, past_stats(train.iloc[train_idx], src)], axis=1)
+        Xb = pd.concat([Xb, past_stats(train.iloc[valid_idx], src)], axis=1)
+
+        # 제출용 (전체 train 이 source)
+        Xtr = pd.concat([Xtr, past_stats(train, train)], axis=1)
+        Xte = pd.concat([Xte, past_stats(test,  train)], axis=1)
+
+    개봉일이 같은 날이면 과거작으로 치지 않는다(엄격한 부등호).
+    과거작이 없으면 네 값 모두 0 이다.
+    """
+    t = target.copy()
+    s = source.copy()
+    t['_d'] = pd.to_datetime(t['release_time']).values.astype('datetime64[ns]').astype('int64')
+    s['_d'] = pd.to_datetime(s['release_time']).values.astype('datetime64[ns]').astype('int64')
+
+    s_key, s_day = s[key].values, s['_d'].values
+    s_val = s['box_off_num'].values.astype(float)
+    t_key, t_day = t[key].values, t['_d'].values
+
+    out = np.zeros((len(t), 4))
+    for i in range(len(t)):
+        m = (s_key == t_key[i]) & (s_day < t_day[i])
+        v = s_val[m]
+        if len(v):
+            out[i] = [len(v), v.mean(), v.max(), v[np.argmax(s_day[m])]]
+
+    cols = ['%s_past_n' % key, '%s_past_mean' % key,
+            '%s_past_max' % key, '%s_past_last' % key]
+    df = pd.DataFrame(out, columns=cols, index=range(len(t)))
+    for c in cols[1:]:
+        df[c] = np.log1p(df[c])        # 관객수는 치우쳐 있으니 로그로 넣는다
+    return df
 
 
 # ---------------------------------------------------------------- 평가
