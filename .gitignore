@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .venv*/
 venv/
+# KOBIS 조회 캐시와 로그 (발급키 관련 파일은 저장소에 올리지 않는다)
+project/3/_kobis_cache.json
+project/3/fetch_kobis.log
